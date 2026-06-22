@@ -40,13 +40,7 @@ variable "region" {
 variable "vm_type" {
   description = "Type de VM pour le build"
   type        = string
-  default     = "tinav5.c2r4p3"
-}
-
-variable "subnet_id" {
-  description = "Subnet ID pour le build (optionnel)"
-  type        = string
-  default     = ""
+  default     = "tinav6.c2r4p2"
 }
 
 variable "bunkerweb_version" {
@@ -67,17 +61,15 @@ variable "ssh_username" {
   default     = "outscale"
 }
 
-variable "source_omi_id" {
+variable "omi_source" {
   description = <<-EOT
     ID de l'OMI Debian 13 source.
-    Pour trouver la dernière :
+    Pour trouver la dernière disponible dans votre région :
       osc-cli api ReadImages --profile default \
         --Filters '{"AccountAliases":["Outscale"],"ImageNames":["Debian-13-*"],"Architectures":["x86_64"]}' \
         | grep -E '"ImageId"|"ImageName"'
   EOT
   type        = string
-  # Exemple eu-west-2 – à vérifier/mettre à jour selon la région
-  default     = ""
 }
 
 # ---------------------------------------------------------------------------
@@ -89,10 +81,7 @@ source "outscale-bsu" "bunkerweb_aio" {
   secret_key           = var.secret_key
   region               = var.region
   custom_endpoint_oapi = "https://api.${var.region}.outscale.com/oapi/latest"
-
-  # OMI source passée explicitement via variable (recommandé)
-  # Si vide, le filtre ci-dessous est utilisé en fallback
-  source_omi = var.source_omi_id
+  source_omi           = var.omi_source
 
   # Instance
   vm_type = var.vm_type
@@ -106,7 +95,9 @@ source "outscale-bsu" "bunkerweb_aio" {
   }
 
   # Connexion SSH
+  communicator                = "ssh"
   ssh_username                = var.ssh_username
+  ssh_interface               = "public_ip"
   ssh_timeout                 = "10m"
   ssh_clear_authorized_keys   = true
   associate_public_ip_address = true
@@ -135,7 +126,7 @@ build {
   name    = "bunkerweb-aio-omi"
   sources = ["source.outscale-bsu.bunkerweb_aio"]
 
-  # Attente que cloud-init ait terminé
+  # Attente que cloud-init ait terminé avant de lancer Ansible
   provisioner "shell" {
     inline = [
       "echo '>>> Attente de la fin de cloud-init...'",
