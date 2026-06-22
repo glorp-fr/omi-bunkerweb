@@ -1,0 +1,12 @@
+# Fichier de variables Packer – NE PAS commiter en VCS
+# Copiez ce fichier en bunkerweb-aio.pkrvars.hcl et remplissez les valeurs
+
+access_key        = "VOTRE_ACCESS_KEY"
+secret_key        = "VOTRE_SECRET_KEY"
+region            = "eu-west-2"
+vm_type           = "tinav5.c2r4p3"
+bunkerweb_version = "1.6.11"
+
+# Optionnel : si vous souhaitez forcer un subnet et SG spécifiques
+# subnet_id         = "subnet-xxxxxxxx"
+# security_group_id = "sg-xxxxxxxx"
