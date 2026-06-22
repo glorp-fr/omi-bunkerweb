@@ -4,7 +4,7 @@
 access_key           = "VOTRE_ACCESS_KEY"
 secret_key           = "VOTRE_SECRET_KEY"
 region               = "eu-west-2"
-custom_endpoint_oapi = "outscale.com/oapi/latest"
+custom_endpoint_oapi = "https://api.eu-west-2.outscale.com/oapi/latest"
 vm_type              = "tinav5.c2r4p3"
 bunkerweb_version    = "1.6.11"
 
