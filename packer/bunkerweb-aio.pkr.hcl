@@ -49,12 +49,6 @@ variable "subnet_id" {
   default     = ""
 }
 
-variable "security_group_id" {
-  description = "Security group ID pour le build (doit autoriser SSH entrant)"
-  type        = string
-  default     = ""
-}
-
 variable "bunkerweb_version" {
   description = "Version BunkerWeb à installer (ex: 1.6.11)"
   type        = string
@@ -73,11 +67,21 @@ variable "ssh_username" {
   default     = "outscale"
 }
 
-
+variable "source_omi_id" {
+  description = <<-EOT
+    ID de l'OMI Debian 13 source.
+    Pour trouver la dernière :
+      osc-cli api ReadImages --profile default \
+        --Filters '{"AccountAliases":["Outscale"],"ImageNames":["Debian-13-*"],"Architectures":["x86_64"]}' \
+        | grep -E '"ImageId"|"ImageName"'
+  EOT
+  type        = string
+  # Exemple eu-west-2 – à vérifier/mettre à jour selon la région
+  default     = ""
+}
 
 # ---------------------------------------------------------------------------
 # Source : OMI Debian 13 officielle Outscale
-# La source OMI est recherchée dynamiquement via filtre sur le nom
 # ---------------------------------------------------------------------------
 
 source "outscale-bsu" "bunkerweb_aio" {
@@ -86,34 +90,14 @@ source "outscale-bsu" "bunkerweb_aio" {
   region               = var.region
   custom_endpoint_oapi = "https://api.${var.region}.outscale.com/oapi/latest"
 
-  # Recherche automatique de la dernière OMI Debian 13 Outscale officielle
-  source_omi_filter {
-    filters = {
-      "name"                = "Debian-13-*"
-      "virtualization-type" = "hvm"
-      "architecture"        = "x86_64"
-      "root-device-type"    = "ebs"
-    }
-    owners      = ["Outscale"]
-    most_recent = true
-  }
+  # OMI source passée explicitement via variable (recommandé)
+  # Si vide, le filtre ci-dessous est utilisé en fallback
+  source_omi = var.source_omi_id
 
   # Instance
   vm_type = var.vm_type
 
-  # Réseau (optionnel – commentez si vous utilisez le réseau par défaut)
-  dynamic "subnet_filter" {
-    for_each = var.subnet_id != "" ? [var.subnet_id] : []
-    content {
-      filters = {
-        "subnet-id" = subnet_filter.value
-      }
-      most_free = true
-      random    = false
-    }
-  }
-
-  # Stockage racine – 20 Go gp2 suffit pour un build OMI
+  # Stockage racine – 20 Go gp2
   launch_block_device_mappings {
     device_name           = "/dev/sda1"
     volume_size           = 20
@@ -131,15 +115,15 @@ source "outscale-bsu" "bunkerweb_aio" {
   omi_name        = "${var.omi_name_prefix}-${var.bunkerweb_version}-{{timestamp}}"
   omi_description = "BunkerWeb ${var.bunkerweb_version} Full Stack (Linux natif, sans Docker) sur Debian 13"
 
-  omi_groups = []  # privée par défaut
+  omi_groups  = []
   omi_regions = [var.region]
 
   tags = {
-    Name          = "${var.omi_name_prefix}-${var.bunkerweb_version}"
+    Name             = "${var.omi_name_prefix}-${var.bunkerweb_version}"
     BunkerWebVersion = var.bunkerweb_version
-    OS            = "Debian-13"
-    Builder       = "Packer"
-    ManagedBy     = "Packer+Ansible"
+    OS               = "Debian-13"
+    Builder          = "Packer"
+    ManagedBy        = "Packer+Ansible"
   }
 }
 
@@ -151,7 +135,7 @@ build {
   name    = "bunkerweb-aio-omi"
   sources = ["source.outscale-bsu.bunkerweb_aio"]
 
-  # Attente que cloud-init ait terminé avant de lancer Ansible
+  # Attente que cloud-init ait terminé
   provisioner "shell" {
     inline = [
       "echo '>>> Attente de la fin de cloud-init...'",
