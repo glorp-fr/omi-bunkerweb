@@ -1,0 +1,266 @@
+---
+- name: Build OMI BunkerWeb AIO – Debian 13
+  hosts: all
+  become: true
+  vars:
+    bunkerweb_version: "1.6.11"
+
+  tasks:
+
+    # ── Mise à jour OS ──────────────────────────────────────────────────────
+
+    - name: Attendre que dpkg soit disponible
+      shell: while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 3; done
+      changed_when: false
+
+    - name: Mise à jour complète du système
+      apt:
+        update_cache: true
+        upgrade: dist
+        autoremove: true
+        autoclean: true
+
+    - name: Installer les paquets nécessaires
+      apt:
+        name:
+          - curl
+          - ca-certificates
+          - gnupg2
+          - python3
+          - ufw
+          - fail2ban
+          - chrony
+        state: present
+
+    # ── Firewall ────────────────────────────────────────────────────────────
+
+    - name: UFW – politique par défaut deny
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    - name: UFW – autoriser SSH
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+
+    - name: UFW – autoriser HTTP
+      ufw:
+        rule: allow
+        port: "80"
+        proto: tcp
+
+    - name: UFW – autoriser HTTPS TCP
+      ufw:
+        rule: allow
+        port: "443"
+        proto: tcp
+
+    - name: UFW – autoriser HTTPS UDP (QUIC)
+      ufw:
+        rule: allow
+        port: "443"
+        proto: udp
+
+    # ── Durcissement SSH ────────────────────────────────────────────────────
+
+    - name: SSH – désactiver PasswordAuthentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+      notify: Restart sshd
+
+    - name: SSH – désactiver PermitRootLogin
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin no"
+      notify: Restart sshd
+
+    # ── Installation BunkerWeb ──────────────────────────────────────────────
+
+    - name: Télécharger install-bunkerweb.sh
+      get_url:
+        url: "https://github.com/bunkerity/bunkerweb/releases/download/v{{ bunkerweb_version }}/install-bunkerweb.sh"
+        dest: /tmp/install-bunkerweb.sh
+        mode: "0755"
+        timeout: 120
+      retries: 3
+      delay: 5
+
+    - name: Installer BunkerWeb Full Stack (sans Docker)
+      shell: bash /tmp/install-bunkerweb.sh --version {{ bunkerweb_version }} --no-auto-backup -y -q
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      async: 600
+      poll: 15
+
+    - name: Vérifier les services BunkerWeb
+      stat:
+        path: "/lib/systemd/system/{{ item }}.service"
+      loop:
+        - bunkerweb
+        - bunkerweb-scheduler
+        - bunkerweb-ui
+      register: bw_units
+
+    - name: Échouer si un service manque
+      fail:
+        msg: "{{ item.item }}.service manquant après installation"
+      when: not item.stat.exists
+      loop: "{{ bw_units.results }}"
+
+    # ── Configuration de base ───────────────────────────────────────────────
+
+    - name: Déployer variables.env
+      copy:
+        dest: /etc/bunkerweb/variables.env
+        owner: root
+        group: nginx
+        mode: "0660"
+        content: |
+          # BunkerWeb {{ bunkerweb_version }} – à personnaliser via user-data au 1er boot
+          API_LISTEN_ADDR=127.0.0.1
+          API_HTTP_PORT=5000
+          API_WHITELIST_IP=127.0.0.0/8
+          USE_MODSECURITY=yes
+          USE_MODSECURITY_CRS=yes
+          USE_MODSECURITY_GLOBAL_CRS=yes
+          USE_BAD_BEHAVIOR=yes
+          USE_DNSBL=yes
+          LOG_LEVEL=warning
+
+    - name: Déployer scheduler.env
+      copy:
+        dest: /etc/bunkerweb/scheduler.env
+        owner: root
+        group: nginx
+        mode: "0660"
+        content: |
+          BUNKERWEB_INSTANCES=127.0.0.1
+          DATABASE_URI=sqlite:////var/lib/bunkerweb/db.sqlite3
+
+    - name: Déployer ui.env
+      copy:
+        dest: /etc/bunkerweb/ui.env
+        owner: root
+        group: nginx
+        mode: "0660"
+        content: |
+          UI_LISTEN_ADDR=127.0.0.1
+          UI_LISTEN_PORT=7000
+          UI_FORWARDED_ALLOW_IPS=127.0.0.1
+
+    # ── Script first-boot ───────────────────────────────────────────────────
+
+    - name: Déployer le script first-boot
+      copy:
+        dest: /usr/local/sbin/bunkerweb-first-boot.sh
+        owner: root
+        mode: "0750"
+        content: |
+          #!/usr/bin/env bash
+          # Exécuté une seule fois au premier démarrage de l'instance.
+          # Variables attendues en user-data (format KEY=VALUE, une par ligne) :
+          #   BW_SERVER_NAME, BW_REVERSE_PROXY_HOST, BW_ADMIN_USERNAME,
+          #   BW_ADMIN_PASSWORD, BW_AUTO_LETSENCRYPT, BW_EMAIL_LETSENCRYPT
+          set -euo pipefail
+          DONE_FLAG="/var/lib/bunkerweb/.first-boot-done"
+          [ -f "$DONE_FLAG" ] && exit 0
+
+          LOGFILE="/var/log/bunkerweb/first-boot.log"
+          mkdir -p /var/log/bunkerweb
+          exec >>"$LOGFILE" 2>&1
+          echo "=== First-boot $(date -Iseconds) ==="
+
+          # Lecture user-data via IMDS Outscale
+          get_var() {
+            curl -sf --max-time 3 "http://169.254.169.254/latest/user-data" 2>/dev/null \
+              | grep "^${1}=" | cut -d'=' -f2- || true
+          }
+
+          set_env() {
+            local k="$1" v="$2" f="${3:-/etc/bunkerweb/variables.env}"
+            grep -q "^#\?${k}=" "$f" && sed -i "s|^#\?${k}=.*|${k}=${v}|" "$f" || echo "${k}=${v}" >> "$f"
+            echo "[OK] ${k} -> ${f}"
+          }
+
+          SERVER_NAME=$(get_var BW_SERVER_NAME)
+          PROXY_HOST=$(get_var BW_REVERSE_PROXY_HOST)
+          ADMIN_USER=$(get_var BW_ADMIN_USERNAME)
+          ADMIN_PASS=$(get_var BW_ADMIN_PASSWORD)
+          LETSENCRYPT=$(get_var BW_AUTO_LETSENCRYPT)
+          LE_EMAIL=$(get_var BW_EMAIL_LETSENCRYPT)
+
+          [ -n "$SERVER_NAME" ] && set_env SERVER_NAME "$SERVER_NAME"
+          [ -n "$PROXY_HOST"  ] && { set_env USE_REVERSE_PROXY yes; set_env REVERSE_PROXY_URL /; set_env REVERSE_PROXY_HOST "$PROXY_HOST"; }
+          [ -n "$LETSENCRYPT" ] && set_env AUTO_LETS_ENCRYPT "$LETSENCRYPT"
+          [ -n "$LE_EMAIL"    ] && set_env EMAIL_LETS_ENCRYPT "$LE_EMAIL"
+
+          if [ -n "$ADMIN_PASS" ]; then
+            set_env ADMIN_USERNAME "${ADMIN_USER:-admin}" /etc/bunkerweb/ui.env
+            set_env ADMIN_PASSWORD "$ADMIN_PASS" /etc/bunkerweb/ui.env
+          fi
+
+          chown root:nginx /etc/bunkerweb/variables.env /etc/bunkerweb/ui.env /etc/bunkerweb/scheduler.env
+          chmod 660 /etc/bunkerweb/variables.env /etc/bunkerweb/ui.env /etc/bunkerweb/scheduler.env
+
+          systemctl start bunkerweb bunkerweb-scheduler bunkerweb-ui || true
+          touch "$DONE_FLAG"
+          echo "=== First-boot terminé $(date -Iseconds) ==="
+
+    - name: Déployer le service systemd first-boot
+      copy:
+        dest: /etc/systemd/system/bunkerweb-first-boot.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=BunkerWeb first-boot configuration
+          After=network-online.target cloud-init.service
+          Wants=network-online.target
+          ConditionPathExists=!/var/lib/bunkerweb/.first-boot-done
+          Before=bunkerweb.service bunkerweb-scheduler.service bunkerweb-ui.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/bunkerweb-first-boot.sh
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Activer le service first-boot
+      systemd:
+        name: bunkerweb-first-boot
+        enabled: true
+        daemon_reload: true
+
+    # ── Arrêt des services avant snapshot ──────────────────────────────────
+
+    - name: Arrêter les services BunkerWeb (gardés enabled)
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: true
+      loop:
+        - bunkerweb-ui
+        - bunkerweb-scheduler
+        - bunkerweb
+      failed_when: false
+
+    - name: Nettoyer les fichiers temporaires d'installation
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/install-bunkerweb.sh
+        - /var/lib/bunkerweb/db.sqlite3
+
+  handlers:
+    - name: Restart sshd
+      systemd:
+        name: ssh
+        state: restarted
