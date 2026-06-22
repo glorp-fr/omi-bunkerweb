@@ -206,16 +206,13 @@
           chown root:nginx /etc/bunkerweb/variables.env /etc/bunkerweb/ui.env /etc/bunkerweb/scheduler.env 2>/dev/null || true
           chmod 660 /etc/bunkerweb/variables.env /etc/bunkerweb/ui.env /etc/bunkerweb/scheduler.env 2>/dev/null || true
 
-          # Démarrer les services dans tous les cas
+          # Démarrer les services
+          # Ordre obligatoire : bunkerweb d'abord (le scheduler en a besoin pour pusher la config)
           echo "[INFO] Démarrage des services BunkerWeb..."
+          systemctl start bunkerweb || true
+          sleep 5
           systemctl start bunkerweb-scheduler || true
           systemctl start bunkerweb-ui || true
-
-          # En mode UI directe, bunkerweb.service n'est pas nécessaire
-          # (l'UI écoute directement sur le port 80)
-          if [ -n "$SERVER_NAME" ]; then
-            systemctl start bunkerweb || true
-          fi
 
           touch "$DONE_FLAG"
           echo "=== First-boot terminé $(date -Iseconds) ==="
