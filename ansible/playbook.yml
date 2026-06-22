@@ -1,0 +1,21 @@
+---
+# Playbook principal – BunkerWeb AIO (Full Stack Linux natif) sur Debian 13
+# Appelé par Packer lors du build de l'OMI
+
+- name: Build OMI BunkerWeb AIO – Debian 13
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    bunkerweb_version: "1.6.11"      # surchargeable via -e depuis Packer
+    bunkerweb_ui_enabled: true
+    bunkerweb_api_enabled: false      # API FastAPI désactivée par défaut
+    bunkerweb_crowdsec: false         # CrowdSec optionnel – activez avec -e
+
+  roles:
+    - role: os_hardening
+      tags: [os, hardening]
+
+    - role: bunkerweb
+      tags: [bunkerweb]
