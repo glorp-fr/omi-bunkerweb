@@ -73,15 +73,22 @@ variable "ssh_username" {
   default     = "outscale"
 }
 
+variable "custom_endpoint_oapi" {
+  description = "Endpoint OAPI Outscale (ex: outscale.com/oapi/latest)"
+  type        = string
+  default     = "outscale.com/oapi/latest"
+}
+
 # ---------------------------------------------------------------------------
 # Source : OMI Debian 13 officielle Outscale
 # La source OMI est recherchée dynamiquement via filtre sur le nom
 # ---------------------------------------------------------------------------
 
 source "outscale-bsu" "bunkerweb_aio" {
-  access_key  = var.access_key
-  secret_key  = var.secret_key
-  region      = var.region
+  access_key           = var.access_key
+  secret_key           = var.secret_key
+  region               = var.region
+  custom_endpoint_oapi = var.custom_endpoint_oapi
 
   # Recherche automatique de la dernière OMI Debian 13 Outscale officielle
   source_omi_filter {
