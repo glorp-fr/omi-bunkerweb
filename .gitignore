@@ -1,0 +1,19 @@
+# Secrets – NE JAMAIS commiter
+packer/*.pkrvars.hcl
+*.pkrvars.hcl
+!*.pkrvars.hcl.example
+
+# Artefacts Packer
+packer/manifest.json
+packer/.packer.d/
+packer/crash.log
+
+# Ansible
+ansible/*.retry
+*.retry
+
+# Divers
+.env
+*.swp
+*.bak
+__pycache__/
