@@ -1,0 +1,21 @@
+---
+# roles/bunkerweb/handlers/main.yml
+
+- name: Reload systemd
+  systemd:
+    daemon_reload: true
+
+- name: Restart bunkerweb
+  systemd:
+    name: bunkerweb
+    state: restarted
+
+- name: Restart bunkerweb-scheduler
+  systemd:
+    name: bunkerweb-scheduler
+    state: restarted
+
+- name: Restart bunkerweb-ui
+  systemd:
+    name: bunkerweb-ui
+    state: restarted
