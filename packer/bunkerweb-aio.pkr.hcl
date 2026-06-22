@@ -74,9 +74,9 @@ variable "ssh_username" {
 }
 
 variable "custom_endpoint_oapi" {
-  description = "Endpoint OAPI Outscale (ex: outscale.com/oapi/latest)"
+  description = "Endpoint OAPI Outscale complet (avec https://)"
   type        = string
-  default     = "outscale.com/oapi/latest"
+  default     = "https://api.eu-west-2.outscale.com/oapi/latest"
 }
 
 # ---------------------------------------------------------------------------
