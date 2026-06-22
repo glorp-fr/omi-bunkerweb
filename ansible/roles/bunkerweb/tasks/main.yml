@@ -1,0 +1,196 @@
+---
+# roles/bunkerweb/tasks/main.yml
+# Installation BunkerWeb Full Stack (sans Docker) via install-bunkerweb.sh officiel
+
+# ── 1. Prérequis ─────────────────────────────────────────────────────────────
+
+- name: S'assurer que curl et gnupg2 sont présents
+  apt:
+    name:
+      - curl
+      - gnupg2
+      - ca-certificates
+    state: present
+    update_cache: false
+
+# ── 2. Téléchargement du script d'installation officiel ───────────────────────
+
+- name: Télécharger install-bunkerweb.sh depuis GitHub Releases
+  get_url:
+    url: "https://github.com/bunkerity/bunkerweb/releases/download/v{{ bunkerweb_version }}/install-bunkerweb.sh"
+    dest: /tmp/install-bunkerweb.sh
+    mode: "0755"
+    timeout: 120
+  register: bw_script_download
+  retries: 3
+  delay: 5
+  until: bw_script_download is succeeded
+
+- name: Télécharger la checksum SHA256 du script
+  get_url:
+    url: "https://github.com/bunkerity/bunkerweb/releases/download/v{{ bunkerweb_version }}/install-bunkerweb.sh.sha256"
+    dest: /tmp/install-bunkerweb.sh.sha256
+    mode: "0644"
+    timeout: 30
+  register: bw_sha256_download
+  retries: 3
+  delay: 5
+  until: bw_sha256_download is succeeded
+
+- name: Vérifier l'intégrité du script (SHA256)
+  shell: |
+    cd /tmp
+    sha256sum -c install-bunkerweb.sh.sha256
+  changed_when: false
+  register: sha256_check
+  failed_when: sha256_check.rc != 0
+
+# ── 3. Installation Full Stack non-interactive ────────────────────────────────
+# Flags utilisés :
+#   --ui        → activer le service bunkerweb-ui
+#   --no-api    → ne pas activer le service API FastAPI
+#   -y          → non-interactif (pas de prompt)
+#   -q          → quiet (log minimaliste)
+#   --no-auto-backup → pas de backup (build fresh)
+# CrowdSec optionnel via variable bunkerweb_crowdsec
+
+- name: Construire les arguments d'installation
+  set_fact:
+    _bw_install_args: >-
+      --version {{ bunkerweb_version }}
+      {{ '--ui' if bunkerweb_ui_enabled else '--no-ui' }}
+      {{ '--api' if bunkerweb_api_enabled else '--no-api' }}
+      {{ '--crowdsec' if bunkerweb_crowdsec else '' }}
+      --no-auto-backup
+      -y
+      -q
+
+- name: "Lancer l'installation BunkerWeb {{ bunkerweb_version }} (Full Stack)"
+  shell: |
+    bash /tmp/install-bunkerweb.sh {{ _bw_install_args }}
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  register: bw_install
+  changed_when: true
+  # L'installation peut prendre plusieurs minutes (compilation de modules nginx)
+  async: 600
+  poll: 10
+
+- name: Afficher la sortie de l'installation
+  debug:
+    msg: "{{ bw_install.stdout_lines[-30:] }}"
+  when: bw_install.stdout_lines is defined
+
+# ── 4. Vérification des services installés ───────────────────────────────────
+
+- name: Vérifier que les services BunkerWeb sont présents (fichiers unit)
+  stat:
+    path: "/lib/systemd/system/{{ item }}.service"
+  loop:
+    - bunkerweb
+    - bunkerweb-scheduler
+    - bunkerweb-ui
+  register: bw_units
+
+- name: Échouer si un unit systemd manque
+  fail:
+    msg: "Service {{ item.item }}.service manquant après installation"
+  when: not item.stat.exists
+  loop: "{{ bw_units.results }}"
+
+# ── 5. Configuration initiale de variables.env ────────────────────────────────
+# Ce fichier sera enrichi au démarrage de l'instance via cloud-init / user-data.
+# On pose ici uniquement un placeholder documenté.
+
+- name: Déployer un variables.env commenté de base
+  template:
+    src: variables.env.j2
+    dest: /etc/bunkerweb/variables.env
+    owner: root
+    group: nginx
+    mode: "0660"
+
+- name: Déployer un scheduler.env de base
+  template:
+    src: scheduler.env.j2
+    dest: /etc/bunkerweb/scheduler.env
+    owner: root
+    group: nginx
+    mode: "0660"
+
+- name: Déployer un ui.env de base
+  template:
+    src: ui.env.j2
+    dest: /etc/bunkerweb/ui.env
+    owner: root
+    group: nginx
+    mode: "0660"
+
+# ── 6. Script de first-boot (cloud-init / user-data) ─────────────────────────
+# Script exécuté au premier démarrage de l'instance pour personnaliser la conf
+
+- name: Déployer le script de first-boot
+  template:
+    src: bunkerweb-first-boot.sh.j2
+    dest: /usr/local/sbin/bunkerweb-first-boot.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Déployer le service systemd de first-boot
+  copy:
+    dest: /etc/systemd/system/bunkerweb-first-boot.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=BunkerWeb – configuration premier démarrage
+      After=network-online.target cloud-init.service
+      Wants=network-online.target
+      ConditionPathExists=!/var/lib/bunkerweb/.first-boot-done
+      Before=bunkerweb.service bunkerweb-scheduler.service bunkerweb-ui.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/bunkerweb-first-boot.sh
+      RemainAfterExit=yes
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Activer le service first-boot
+  systemd:
+    name: bunkerweb-first-boot
+    enabled: true
+    daemon_reload: true
+
+# ── 7. Arrêt des services pour le snapshot (OMI clean) ───────────────────────
+
+- name: S'assurer que BunkerWeb est arrêté avant le snapshot
+  systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: true   # reste enabled pour démarrer automatiquement sur les instances
+  loop:
+    - bunkerweb-ui
+    - bunkerweb-scheduler
+    - bunkerweb
+  failed_when: false
+
+- name: Nettoyer les caches BunkerWeb avant snapshot
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /var/cache/bunkerweb/letsencrypt
+    - /var/lib/bunkerweb/db.sqlite3
+  failed_when: false
+
+- name: Nettoyer les fichiers temporaires d'installation
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/install-bunkerweb.sh
+    - /tmp/install-bunkerweb.sh.sha256
