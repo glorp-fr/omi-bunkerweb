@@ -92,11 +92,12 @@
       delay: 5
 
     - name: Installer BunkerWeb Full Stack (sans Docker)
-      shell: bash /tmp/install-bunkerweb.sh --version {{ bunkerweb_version }} --no-auto-backup -y -q
+      shell: bash /tmp/install-bunkerweb.sh --version {{ bunkerweb_version }} --full --no-wizard --no-auto-backup --no-tui -y
       environment:
         DEBIAN_FRONTEND: noninteractive
       async: 600
       poll: 15
+      register: bw_install
 
     - name: Vérifier les services BunkerWeb
       stat:
