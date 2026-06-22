@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# /usr/local/sbin/bunkerweb-first-boot.sh
+# Exécuté UNE SEULE fois au premier démarrage de l'instance via systemd.
+# Permet de personnaliser BunkerWeb via les variables d'instance (user-data cloud-init).
+#
+# Variables cloud-init attendues (optionnelles) :
+#   BW_SERVER_NAME          – FQDN(s) du/des site(s) à protéger (espace-séparé)
+#   BW_REVERSE_PROXY_HOST   – Upstream backend (ex: http://127.0.0.1:8000)
+#   BW_ADMIN_USERNAME       – Identifiant admin UI (défaut: admin)
+#   BW_ADMIN_PASSWORD       – Mot de passe admin UI (obligatoire en prod)
+#   BW_AUTO_LETSENCRYPT     – yes/no (défaut: no)
+#   BW_EMAIL_LETSENCRYPT    – Email Let's Encrypt
+#   BW_MULTISITE            – yes/no (défaut: no)
+#   BW_API_WHITELIST_IP     – IPs autorisées à l'API interne (défaut: 127.0.0.0/8)
+
+set -euo pipefail
+LOGFILE="/var/log/bunkerweb/first-boot.log"
+DONE_FLAG="/var/lib/bunkerweb/.first-boot-done"
+VARS_ENV="/etc/bunkerweb/variables.env"
+UI_ENV="/etc/bunkerweb/ui.env"
+
+mkdir -p /var/log/bunkerweb
+exec >> "$LOGFILE" 2>&1
+
+echo "=========================================="
+echo "BunkerWeb First-Boot – $(date -Iseconds)"
+echo "=========================================="
+
+# ── Lecture des métadonnées cloud-init / user-data ────────────────────────────
+# Les variables sont injectées dans l'environnement par cloud-init si vous utilisez
+# le format #cloud-config avec write_files ou runcmd.
+# Alternative : lecture directe depuis les métadonnées Outscale IMDS (port 80).
+
+get_imds() {
+  local key="$1"
+  curl -sf --max-time 3 "http://169.254.169.254/latest/user-data" 2>/dev/null \
+    | grep "^${key}=" | cut -d'=' -f2- || true
+}
+
+BW_SERVER_NAME="${BW_SERVER_NAME:-$(get_imds BW_SERVER_NAME)}"
+BW_REVERSE_PROXY_HOST="${BW_REVERSE_PROXY_HOST:-$(get_imds BW_REVERSE_PROXY_HOST)}"
+BW_ADMIN_USERNAME="${BW_ADMIN_USERNAME:-$(get_imds BW_ADMIN_USERNAME)}"
+BW_ADMIN_PASSWORD="${BW_ADMIN_PASSWORD:-$(get_imds BW_ADMIN_PASSWORD)}"
+BW_AUTO_LETSENCRYPT="${BW_AUTO_LETSENCRYPT:-$(get_imds BW_AUTO_LETSENCRYPT)}"
+BW_EMAIL_LETSENCRYPT="${BW_EMAIL_LETSENCRYPT:-$(get_imds BW_EMAIL_LETSENCRYPT)}"
+BW_MULTISITE="${BW_MULTISITE:-$(get_imds BW_MULTISITE)}"
+BW_API_WHITELIST_IP="${BW_API_WHITELIST_IP:-$(get_imds BW_API_WHITELIST_IP)}"
+
+# ── Mise à jour de variables.env ──────────────────────────────────────────────
+
+set_env_var() {
+  local key="$1"
+  local value="$2"
+  local file="${3:-$VARS_ENV}"
+  if grep -q "^#\?${key}=" "$file" 2>/dev/null; then
+    sed -i "s|^#\?${key}=.*|${key}=${value}|" "$file"
+  else
+    echo "${key}=${value}" >> "$file"
+  fi
+  echo "[OK] ${key}=${value} → ${file}"
+}
+
+if [[ -n "$BW_SERVER_NAME" ]]; then
+  set_env_var "SERVER_NAME" "$BW_SERVER_NAME"
+  set_env_var "USE_REVERSE_PROXY" "yes"
+  set_env_var "REVERSE_PROXY_URL" "/"
+fi
+
+if [[ -n "$BW_REVERSE_PROXY_HOST" ]]; then
+  set_env_var "REVERSE_PROXY_HOST" "$BW_REVERSE_PROXY_HOST"
+fi
+
+if [[ -n "$BW_AUTO_LETSENCRYPT" ]]; then
+  set_env_var "AUTO_LETS_ENCRYPT" "$BW_AUTO_LETSENCRYPT"
+fi
+
+if [[ -n "$BW_EMAIL_LETSENCRYPT" ]]; then
+  set_env_var "EMAIL_LETS_ENCRYPT" "$BW_EMAIL_LETSENCRYPT"
+fi
+
+if [[ -n "$BW_MULTISITE" ]]; then
+  set_env_var "MULTISITE" "$BW_MULTISITE"
+fi
+
+if [[ -n "$BW_API_WHITELIST_IP" ]]; then
+  set_env_var "API_WHITELIST_IP" "$BW_API_WHITELIST_IP"
+fi
+
+# ── Mise à jour de ui.env (credentials admin) ────────────────────────────────
+
+ADMIN_USER="${BW_ADMIN_USERNAME:-admin}"
+ADMIN_PASS="${BW_ADMIN_PASSWORD:-}"
+
+if [[ -n "$ADMIN_PASS" ]]; then
+  set_env_var "ADMIN_USERNAME" "$ADMIN_USER" "$UI_ENV"
+  set_env_var "ADMIN_PASSWORD" "$ADMIN_PASS" "$UI_ENV"
+  echo "[OK] Credentials UI configurés pour l'utilisateur ${ADMIN_USER}"
+else
+  echo "[WARN] BW_ADMIN_PASSWORD non défini – le wizard de première connexion sera actif"
+fi
+
+# ── Correction des permissions ────────────────────────────────────────────────
+chown root:nginx "$VARS_ENV" "$UI_ENV" /etc/bunkerweb/scheduler.env 2>/dev/null || true
+chmod 660 "$VARS_ENV" "$UI_ENV" /etc/bunkerweb/scheduler.env 2>/dev/null || true
+
+# ── Démarrage des services ────────────────────────────────────────────────────
+echo "Démarrage des services BunkerWeb..."
+systemctl start bunkerweb || true
+systemctl start bunkerweb-scheduler || true
+{% if bunkerweb_ui_enabled %}
+systemctl start bunkerweb-ui || true
+{% endif %}
+
+# ── Marquage du first-boot comme terminé ─────────────────────────────────────
+touch "$DONE_FLAG"
+echo "=========================================="
+echo "First-Boot terminé – $(date -Iseconds)"
+echo "=========================================="
