@@ -1,0 +1,140 @@
+---
+# roles/os_hardening/tasks/main.yml
+# Mise à jour OS + durcissement de base pour l'OMI
+
+- name: Attendre que dpkg/apt soient disponibles
+  shell: |
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+      echo "Attente dpkg..."; sleep 3;
+    done
+  changed_when: false
+
+- name: Mise à jour du cache apt
+  apt:
+    update_cache: true
+    cache_valid_time: 0
+
+- name: Mise à jour complète du système (dist-upgrade)
+  apt:
+    upgrade: dist
+    autoremove: true
+    autoclean: true
+  notify: Recollect facts after upgrade
+
+- name: Installer les paquets utilitaires de base
+  apt:
+    name:
+      - curl
+      - wget
+      - gnupg2
+      - ca-certificates
+      - apt-transport-https
+      - lsb-release
+      - python3
+      - python3-pip
+      - unzip
+      - jq
+      - sudo
+      - logrotate
+      - rsyslog
+      - chrony           # NTP
+      - fail2ban         # Protection brute-force SSH
+      - ufw              # Firewall simplifié
+    state: present
+
+- name: Configurer UFW – politique par défaut DENY INPUT
+  ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+
+- name: UFW – autoriser SSH (22)
+  ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    comment: SSH
+
+- name: UFW – autoriser HTTP (80)
+  ufw:
+    rule: allow
+    port: "80"
+    proto: tcp
+    comment: BunkerWeb HTTP
+
+- name: UFW – autoriser HTTPS TCP (443)
+  ufw:
+    rule: allow
+    port: "443"
+    proto: tcp
+    comment: BunkerWeb HTTPS
+
+- name: UFW – autoriser HTTPS UDP/QUIC (443)
+  ufw:
+    rule: allow
+    port: "443"
+    proto: udp
+    comment: BunkerWeb QUIC/HTTP3
+
+- name: Configurer fail2ban SSH
+  copy:
+    dest: /etc/fail2ban/jail.d/sshd-custom.conf
+    mode: "0644"
+    content: |
+      [sshd]
+      enabled  = true
+      port     = ssh
+      filter   = sshd
+      logpath  = /var/log/auth.log
+      maxretry = 5
+      bantime  = 3600
+      findtime = 600
+  notify: Restart fail2ban
+
+- name: Durcissement SSH – désactiver PasswordAuthentication
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?PasswordAuthentication"
+    line: "PasswordAuthentication no"
+    state: present
+  notify: Restart sshd
+
+- name: Durcissement SSH – désactiver PermitRootLogin
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?PermitRootLogin"
+    line: "PermitRootLogin no"
+    state: present
+  notify: Restart sshd
+
+- name: Désactiver les services inutiles pour une VM WAF
+  systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - bluetooth
+    - avahi-daemon
+  failed_when: false   # Ignoré si le service n'existe pas
+
+- name: Activer chrony (NTP)
+  systemd:
+    name: chrony
+    state: started
+    enabled: true
+
+- name: Sysctl – durcissement réseau
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop:
+    - { key: "net.ipv4.ip_forward",                   value: "0" }
+    - { key: "net.ipv4.conf.all.accept_redirects",    value: "0" }
+    - { key: "net.ipv4.conf.default.accept_redirects",value: "0" }
+    - { key: "net.ipv4.conf.all.send_redirects",      value: "0" }
+    - { key: "net.ipv4.conf.all.log_martians",        value: "1" }
+    - { key: "net.ipv4.tcp_syncookies",               value: "1" }
+    - { key: "net.ipv6.conf.all.accept_redirects",    value: "0" }
+    - { key: "kernel.dmesg_restrict",                 value: "1" }
