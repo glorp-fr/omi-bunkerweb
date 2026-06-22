@@ -34,35 +34,37 @@
 
     # ── Firewall ────────────────────────────────────────────────────────────
 
-    - name: UFW – politique par défaut deny
-      ufw:
-        state: enabled
-        policy: deny
-        direction: incoming
-
-    - name: UFW – autoriser SSH
+    # UFW : on configure les règles mais on laisse UFW DÉSACTIVÉ dans l'OMI.
+    # Il sera activé au first-boot pour éviter de bloquer SSH/HTTP au démarrage.
+    - name: UFW – configurer règle SSH (sans activer)
       ufw:
         rule: allow
         port: "22"
         proto: tcp
 
-    - name: UFW – autoriser HTTP
+    - name: UFW – configurer règle HTTP (sans activer)
       ufw:
         rule: allow
         port: "80"
         proto: tcp
 
-    - name: UFW – autoriser HTTPS TCP
+    - name: UFW – configurer règle HTTPS TCP (sans activer)
       ufw:
         rule: allow
         port: "443"
         proto: tcp
 
-    - name: UFW – autoriser HTTPS UDP (QUIC)
+    - name: UFW – configurer règle HTTPS UDP/QUIC (sans activer)
       ufw:
         rule: allow
         port: "443"
         proto: udp
+
+    - name: UFW – politique deny par défaut (sans activer le service)
+      ufw:
+        policy: deny
+        direction: incoming
+        state: disabled
 
     # ── Durcissement SSH ────────────────────────────────────────────────────
 
@@ -236,6 +238,10 @@
 
           chown root:nginx /etc/bunkerweb/variables.env /etc/bunkerweb/ui.env /etc/bunkerweb/scheduler.env 2>/dev/null || true
           chmod 660 /etc/bunkerweb/variables.env /etc/bunkerweb/ui.env /etc/bunkerweb/scheduler.env 2>/dev/null || true
+
+          # Activer UFW maintenant que le réseau est up et les règles déjà configurées
+          echo "[INFO] Activation UFW..."
+          ufw --force enable || true
 
           # Démarrer les services dans tous les cas
           echo "[INFO] Démarrage des services BunkerWeb..."
