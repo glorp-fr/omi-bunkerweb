@@ -54,6 +54,12 @@ variable "ssh_username" {
   default = "outscale"
 }
 
+variable "ansible_playbook" {
+  description = "Playbook Ansible à utiliser (playbook.yml ou playbook-clean.yml)"
+  type        = string
+  default     = "playbook-clean.yml"
+}
+
 # ---------------------------------------------------------------------------
 # Source
 # ---------------------------------------------------------------------------
@@ -108,7 +114,7 @@ build {
   }
 
   provisioner "ansible" {
-    playbook_file = "${path.root}/playbook.yml"
+    playbook_file = "${path.root}/${var.ansible_playbook}"
     user          = var.ssh_username
     use_proxy     = false
     extra_arguments = [
