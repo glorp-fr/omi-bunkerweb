@@ -27,8 +27,7 @@ BunkerWeb est un WAF open-source basé sur NGINX avec ModSecurity, CRS OWASP, et
 omi-bunkerweb/
 ├── bunkerweb-aio.pkr.hcl              # Template Packer
 ├── bunkerweb-aio.pkrvars.hcl.example  # Exemple de variables (à copier)
-├── playbook.yml                        # Playbook v1 – UI sur port 80 (sysctl hack)
-├── playbook-clean.yml                  # Playbook v2 – architecture propre (recommandé)
+├── playbook.yml                        # Playbook Ansible (MAJ OS + BunkerWeb)
 ├── Makefile                            # Raccourcis de commandes
 └── README.md
 ```
@@ -85,7 +84,7 @@ make init
 ### 5. Lancer le build
 
 ```bash
-make build-clean   # recommandé – architecture propre
+make build
 ```
 
 Le build dure environ **15–20 minutes**. À la fin, l'OMI est disponible dans ton compte Outscale sous le nom `bunkerweb-aio-debian13-1.6.11-<timestamp>`.
@@ -168,27 +167,19 @@ journalctl -u bunkerweb-scheduler -f
 journalctl -u bunkerweb-ui -f
 ```
 
-## Playbooks disponibles
-
-| Playbook | Commande | Description |
-|----------|----------|-------------|
-| `playbook-clean.yml` | `make build-clean` | **Recommandé** – architecture native BunkerWeb, nginx sur 80/443, UI sur 7000 |
-| `playbook.yml` | `make build` | Alternatif – sysctl `ip_unprivileged_port_start=80`, UI directement sur le port 80 |
-
 ## Commandes Makefile
 
 ```bash
-make init         # Télécharger les plugins Packer
-make validate     # Valider le template
-make build-clean  # Build recommandé (playbook-clean.yml)
-make build        # Build alternatif (playbook.yml)
-make clean        # Nettoyer les fichiers temporaires
+make init      # Télécharger les plugins Packer
+make validate  # Valider le template
+make build     # Lancer le build de l'OMI
+make clean     # Nettoyer les fichiers temporaires
 ```
 
 Surcharger la version ou la région :
 
 ```bash
-make build-clean BW_VERSION=1.6.11 REGION=cloudgouv-eu-west-1
+make build BW_VERSION=1.6.11 REGION=cloudgouv-eu-west-1
 ```
 
 ## Variables Packer
@@ -201,7 +192,6 @@ make build-clean BW_VERSION=1.6.11 REGION=cloudgouv-eu-west-1
 | `vm_type` | `tinav6.c2r4p2` | Type de VM pour le build |
 | `omi_source` | — | ID de l'OMI Debian 13 source (**obligatoire**) |
 | `bunkerweb_version` | `1.6.11` | Version BunkerWeb à installer |
-| `ansible_playbook` | `playbook-clean.yml` | Playbook Ansible à utiliser |
 
 Les credentials peuvent aussi être passés via variables d'environnement :
 
