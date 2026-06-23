@@ -4,6 +4,13 @@ Build d'une OMI Outscale avec **BunkerWeb Full Stack** installé nativement (san
 
 BunkerWeb est un WAF open-source basé sur NGINX avec ModSecurity, CRS OWASP, et une Web UI intégrée.
 
+## Architecture
+
+- **nginx** (root) gère les ports 80/443
+- **bunkerweb-ui** (gunicorn, user nginx) écoute sur `127.0.0.1:7000`
+- **bunkerweb-scheduler** orchestre la configuration et redémarre nginx si besoin
+- Le filtrage réseau est géré par les **security groups Outscale** (pas de firewall OS)
+
 ## Prérequis
 
 | Outil | Version min |
@@ -12,7 +19,7 @@ BunkerWeb est un WAF open-source basé sur NGINX avec ModSecurity, CRS OWASP, et
 | Plugin Packer `outscale/outscale` | ≥ 1.1.1 |
 | Plugin Packer `hashicorp/ansible` | ≥ 1.1.1 |
 | Ansible | ≥ 2.14 |
-| `osc-cli` | pour trouver l'OMI source |
+| `osc-cli` | pour trouver l'OMI source Debian 13 |
 
 ## Structure
 
@@ -20,7 +27,8 @@ BunkerWeb est un WAF open-source basé sur NGINX avec ModSecurity, CRS OWASP, et
 omi-bunkerweb/
 ├── bunkerweb-aio.pkr.hcl              # Template Packer
 ├── bunkerweb-aio.pkrvars.hcl.example  # Exemple de variables (à copier)
-├── playbook.yml                        # Playbook Ansible (MAJ OS + BunkerWeb)
+├── playbook.yml                        # Playbook v1 – UI sur port 80 (sysctl hack)
+├── playbook-clean.yml                  # Playbook v2 – architecture propre (recommandé)
 ├── Makefile                            # Raccourcis de commandes
 └── README.md
 ```
@@ -74,16 +82,10 @@ omi_source        = "ami-29671c1b"           # OMI Debian 13 trouvée à l'étap
 make init
 ```
 
-### 5. Valider le template
+### 5. Lancer le build
 
 ```bash
-make validate
-```
-
-### 6. Lancer le build
-
-```bash
-make build
+make build-clean   # recommandé – architecture propre
 ```
 
 Le build dure environ **15–20 minutes**. À la fin, l'OMI est disponible dans ton compte Outscale sous le nom `bunkerweb-aio-debian13-1.6.11-<timestamp>`.
@@ -93,27 +95,42 @@ Le build dure environ **15–20 minutes**. À la fin, l'OMI est disponible dans 
 Le build Packer lance une VM temporaire depuis l'OMI Debian 13 source, puis Ansible :
 
 1. **Met à jour l'OS** (`dist-upgrade`)
-2. **Installe les paquets** : curl, ufw, fail2ban, chrony, python3…
-3. **Configure UFW** : ports 22/80/443 TCP+UDP ouverts, tout le reste bloqué
-4. **Durcit SSH** : `PasswordAuthentication no`, `PermitRootLogin no`
-5. **Installe BunkerWeb Full Stack** via `install-bunkerweb.sh` officiel :
-   - `bunkerweb` (nginx + ModSecurity WAF)
-   - `bunkerweb-scheduler` (gestion de la configuration)
-   - `bunkerweb-ui` (interface Web sur `127.0.0.1:7000`)
-6. **Déploie un script `first-boot`** exécuté au premier démarrage de l'instance pour appliquer la configuration via user-data
-7. **Nettoie** l'image avant snapshot (cloud-init, machine-id, logs, caches)
+2. **Installe les paquets** : curl, gnupg2, chrony, python3
+3. **Durcit SSH** : `PasswordAuthentication no`, `PermitRootLogin no`
+4. **Installe BunkerWeb Full Stack** via `install-bunkerweb.sh` officiel :
+   - `bunkerweb` (nginx + ModSecurity WAF) → ports 80/443
+   - `bunkerweb-scheduler` (orchestration de la configuration)
+   - `bunkerweb-ui` (interface Web gunicorn) → `127.0.0.1:7000`
+5. **Déploie un script `first-boot`** exécuté au premier démarrage de l'instance
+6. **Nettoie** l'image avant snapshot (cloud-init, machine-id, caches apt)
+
+> Le filtrage réseau est délégué aux **security groups Outscale** — aucun firewall OS n'est installé.
 
 ## Utilisation de l'OMI
 
 ### Démarrer une instance
 
-Lancez une instance depuis l'OMI générée. Passez la configuration en **user-data** (format `KEY=VALUE`, une variable par ligne) :
+Créez une instance depuis l'OMI générée avec un security group autorisant au minimum les ports **22** (SSH) et **7000** (Web UI).
+
+### Sans user-data
+
+Au premier démarrage, BunkerWeb démarre avec sa configuration par défaut et affiche le **wizard de première connexion** sur :
 
 ```
-BW_SERVER_NAME=www.monsite.fr
-BW_REVERSE_PROXY_HOST=http://127.0.0.1:8000
+http://<IP>:7000/
+```
+
+Le wizard permet de créer le compte administrateur et de configurer BunkerWeb interactivement.
+
+### Avec user-data
+
+Passez la configuration en **user-data** (format `KEY=VALUE`, une variable par ligne) pour bypasser le wizard :
+
+```
 BW_ADMIN_USERNAME=admin
 BW_ADMIN_PASSWORD=MonMotDePasse!1
+BW_SERVER_NAME=www.monsite.fr
+BW_REVERSE_PROXY_HOST=http://127.0.0.1:8000
 BW_AUTO_LETSENCRYPT=yes
 BW_EMAIL_LETSENCRYPT=admin@monsite.fr
 ```
@@ -124,41 +141,55 @@ Au premier démarrage, le service `bunkerweb-first-boot` lit ces variables depui
 
 | Variable | Description |
 |----------|-------------|
+| `BW_ADMIN_USERNAME` | Identifiant admin UI (défaut: `admin`) |
+| `BW_ADMIN_PASSWORD` | Mot de passe admin UI — si absent, le wizard s'affiche |
 | `BW_SERVER_NAME` | FQDN du site à protéger |
 | `BW_REVERSE_PROXY_HOST` | Upstream backend (ex: `http://127.0.0.1:8000`) |
-| `BW_ADMIN_USERNAME` | Identifiant admin UI (défaut: `admin`) |
-| `BW_ADMIN_PASSWORD` | Mot de passe admin UI (**obligatoire**) |
 | `BW_AUTO_LETSENCRYPT` | `yes` pour activer Let's Encrypt |
 | `BW_EMAIL_LETSENCRYPT` | Email pour Let's Encrypt |
 
 ### Accès à la Web UI
 
-Sans `BW_ADMIN_PASSWORD` défini, le **wizard de première connexion** est actif : accédez à `http://<IP>/` pour le compléter.
-
-Avec `BW_ADMIN_PASSWORD` défini, connectez-vous directement à `http://<IP>/` avec les credentials configurés.
-
-> La Web UI écoute en interne sur `127.0.0.1:7000` et est exposée via BunkerWeb en reverse proxy.
+| Cas | URL |
+|-----|-----|
+| Sans user-data | `http://<IP>:7000/` → wizard de première connexion |
+| Avec `BW_ADMIN_PASSWORD` | `http://<IP>:7000/` → connexion directe |
+| Avec `BW_SERVER_NAME` configuré | `http://<IP>/` via BunkerWeb (nginx) |
 
 ### Logs
 
 ```bash
-# Logs du first-boot
+# Log du first-boot
 cat /var/log/bunkerweb/first-boot.log
 
-# Logs BunkerWeb
+# Logs des services
 journalctl -u bunkerweb -f
 journalctl -u bunkerweb-scheduler -f
 journalctl -u bunkerweb-ui -f
 ```
 
-## Ports ouverts (UFW)
+## Playbooks disponibles
 
-| Port | Protocole | Usage |
-|------|-----------|-------|
-| 22 | TCP | SSH |
-| 80 | TCP | HTTP (BunkerWeb) |
-| 443 | TCP | HTTPS (BunkerWeb) |
-| 443 | UDP | QUIC / HTTP3 |
+| Playbook | Commande | Description |
+|----------|----------|-------------|
+| `playbook-clean.yml` | `make build-clean` | **Recommandé** – architecture native BunkerWeb, nginx sur 80/443, UI sur 7000 |
+| `playbook.yml` | `make build` | Alternatif – sysctl `ip_unprivileged_port_start=80`, UI directement sur le port 80 |
+
+## Commandes Makefile
+
+```bash
+make init         # Télécharger les plugins Packer
+make validate     # Valider le template
+make build-clean  # Build recommandé (playbook-clean.yml)
+make build        # Build alternatif (playbook.yml)
+make clean        # Nettoyer les fichiers temporaires
+```
+
+Surcharger la version ou la région :
+
+```bash
+make build-clean BW_VERSION=1.6.11 REGION=cloudgouv-eu-west-1
+```
 
 ## Variables Packer
 
@@ -170,28 +201,14 @@ journalctl -u bunkerweb-ui -f
 | `vm_type` | `tinav6.c2r4p2` | Type de VM pour le build |
 | `omi_source` | — | ID de l'OMI Debian 13 source (**obligatoire**) |
 | `bunkerweb_version` | `1.6.11` | Version BunkerWeb à installer |
+| `ansible_playbook` | `playbook-clean.yml` | Playbook Ansible à utiliser |
 
 Les credentials peuvent aussi être passés via variables d'environnement :
 
 ```bash
 export OSC_ACCESS_KEY="xxxxxxxxxxxx"
 export OSC_SECRET_KEY="xxxxxxxxxxxx"
-make build
-```
-
-## Commandes Makefile
-
-```bash
-make init      # Télécharger les plugins Packer
-make validate  # Valider le template
-make build     # Lancer le build de l'OMI
-make clean     # Nettoyer les fichiers temporaires
-```
-
-Pour builder une version spécifique :
-
-```bash
-make build BW_VERSION=1.6.11 REGION=cloudgouv-eu-west-1
+make build-clean
 ```
 
 ## Références
