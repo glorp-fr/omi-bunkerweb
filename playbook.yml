@@ -49,6 +49,18 @@
         line: "PermitRootLogin no"
       notify: Restart sshd
 
+    # ── Sysctl ─────────────────────────────────────────────────────────────
+    # Autoriser les users non-root à binder sur les ports >= 80
+    # Nécessaire pour bunkerweb-ui (gunicorn, user nginx) sur le port 80
+
+    - name: Sysctl – autoriser binding port 80 aux users non-root
+      sysctl:
+        name: net.ipv4.ip_unprivileged_port_start
+        value: "80"
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-bunkerweb.conf
+
     # ── Installation BunkerWeb ──────────────────────────────────────────────
 
     - name: Télécharger install-bunkerweb.sh
